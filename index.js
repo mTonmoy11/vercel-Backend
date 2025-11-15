@@ -4,24 +4,59 @@ const bcrypt = require("bcrypt");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { MongoClient, ObjectId } = require("mongodb");
 require("dotenv").config();
+
 const app = express();
 const port = process.env.PORT || 5000;
 
+// IMPORTANT: Update CORS to allow your Vercel frontend
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "*",
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "https://vercel-frontend-5k4d81x7z-tonmoys-projects-9c9788f9.vercel.app",
+      /https:\/\/.*\.vercel\.app$/, // Allow all Vercel preview URLs
+      process.env.CLIENT_URL,
+    ],
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
 app.use(express.json());
 
+// Add a root route
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    message: "Transparency Bangladesh API is running",
+    version: "1.0.0",
+    endpoints: {
+      dashboard: "/api/dashboard/statistics",
+      reports: "/api/reports",
+      trainers: "/trainers",
+      events: "/events",
+      govtSpending: "/api/govt-spending",
+    },
+  });
+});
+
+// MongoDB Connection with proper URI
+const uri =
+  process.env.MONGODB_URI ||
+  `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ivueggz.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
+
+const client = new MongoClient(uri, {
+  ignoreUndefined: true,
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+});
+
 // Serve static files for uploaded evidence
 app.use("/uploads", express.static("uploads"));
-
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ivueggz.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = "./uploads";
@@ -2049,7 +2084,7 @@ async function run() {
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
-    console.log("✅ Connected to MongoDB!");
+    console.log("Connected to MongoDB!");
   } finally {
     // Don't close the connection
   }
@@ -2062,5 +2097,5 @@ app.get("/", (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`🚀 Server is running on port ${port}`);
+  console.log(`Server is running on port ${port}`);
 });
