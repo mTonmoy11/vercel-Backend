@@ -4,26 +4,36 @@ const bcrypt = require("bcrypt");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { v2: cloudinary } = require("cloudinary");
 const { MongoClient, ObjectId } = require("mongodb");
 require("dotenv").config();
 
 const app = express();
 const port = process.env.PORT || 5000;
 
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
 // IMPORTANT: Update CORS to allow your Vercel frontend
 app.use(
   cors({
     origin: [
       "http://localhost:5173",
+      "http://localhost:5174",
       "http://localhost:3000",
+      /http:\/\/localhost:\d+$/,
       "https://vercel-frontend-5k4d81x7z-tonmoys-projects-9c9788f9.vercel.app",
       /https:\/\/.*\.vercel\.app$/, // Allow all Vercel preview URLs
       process.env.CLIENT_URL,
+      process.env.ADMIN_URL,
     ],
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
 
 app.use(express.json());
@@ -37,9 +47,6 @@ app.get("/", (req, res) => {
     endpoints: {
       dashboard: "/api/dashboard/statistics",
       reports: "/api/reports",
-      trainers: "/trainers",
-      events: "/events",
-      govtSpending: "/api/govt-spending",
     },
   });
 });
@@ -65,20 +72,12 @@ if (!fs.existsSync(uploadsDir)) {
 }
 
 // Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, "uploads/");
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  },
-});
+const evidenceStorage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|pdf|mp3|mp4/;
   const extname = allowedTypes.test(
-    path.extname(file.originalname).toLowerCase()
+    path.extname(file.originalname).toLowerCase(),
   );
   const mimetype = allowedTypes.test(file.mimetype);
 
@@ -87,52 +86,32 @@ const fileFilter = (req, file, cb) => {
   } else {
     cb(
       new Error(
-        "Invalid file type. Only JPEG, PNG, PDF, MP3, and MP4 are allowed."
-      )
+        "Invalid file type. Only JPEG, PNG, PDF, MP3, and MP4 are allowed.",
+      ),
     );
   }
 };
 
 const upload = multer({
-  storage: storage,
+  storage: evidenceStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: fileFilter,
 });
 
-// Configure multer for trainer photos
-const trainerStorage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const dir = "uploads/trainers";
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    cb(null, dir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, "trainer-" + uniqueSuffix + path.extname(file.originalname));
-  },
-});
-
-const uploadTrainerPhoto = multer({
-  storage: trainerStorage,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
-  },
-  fileFilter: function (req, file, cb) {
-    const allowedTypes = /jpeg|jpg|png|gif|webp/;
-    const extname = allowedTypes.test(
-      path.extname(file.originalname).toLowerCase()
+const uploadBufferToCloudinary = (file, options = {}) =>
+  new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: "auto", ...options },
+      (error, result) => {
+        if (error) {
+          return reject(error);
+        }
+        resolve(result);
+      },
     );
-    const mimetype = allowedTypes.test(file.mimetype);
 
-    if (mimetype && extname) {
-      return cb(null, true);
-    } else {
-      cb(new Error("Only image files are allowed (jpeg, jpg, png, gif, webp)"));
-    }
-  },
-});
+    stream.end(file.buffer);
+  });
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 // const client = new MongoClient(uri, {
@@ -162,18 +141,12 @@ async function run() {
     const adminCollection = client
       .db("transparency-bangladesh")
       .collection("admins");
-    const trainersCollection = client
-      .db("transparencyBD")
-      .collection("trainers");
-    const eventsCollection = client
-      .db("transparencyBD")
-      .collection("education_events");
-    const govtSpendingCollection = client
+    const hireRequestsCollection = client
       .db("transparency-bangladesh")
-      .collection("govt_spending");
+      .collection("hire_requests");
 
     // ========== CREATE DEFAULT ADMIN ==========
-    console.log("🔍 Checking for default admin...");
+    console.log(" Checking for default admin...");
 
     const existingAdmin = await adminCollection.findOne({
       email: "tonmoy.sufian01@gmail.com",
@@ -193,15 +166,15 @@ async function run() {
       };
 
       await adminCollection.insertOne(defaultAdmin);
-      console.log("✅ Default admin created successfully");
+      console.log(" Default admin created successfully");
     } else {
-      console.log("✅ Default admin already exists");
+      console.log(" Default admin already exists");
     }
 
     // ========== ADMIN LOGIN ENDPOINT ==========
     app.post("/api/admin/login", async (req, res) => {
       try {
-        console.log("🔐 Admin login attempt:", req.body.email);
+        console.log(" Admin login attempt:", req.body.email);
 
         const { email, password } = req.body;
 
@@ -215,7 +188,7 @@ async function run() {
         const admin = await adminCollection.findOne({ email: email });
 
         if (!admin) {
-          console.log("❌ Admin not found:", email);
+          console.log(" Admin not found:", email);
           return res.status(401).json({
             success: false,
             message: "Invalid credentials",
@@ -223,7 +196,7 @@ async function run() {
         }
 
         if (!admin.isActive) {
-          console.log("❌ Admin account deactivated:", email);
+          console.log(" Admin account deactivated:", email);
           return res.status(403).json({
             success: false,
             message: "Admin account is deactivated",
@@ -233,7 +206,7 @@ async function run() {
         const isPasswordValid = await bcrypt.compare(password, admin.password);
 
         if (!isPasswordValid) {
-          console.log("❌ Invalid password for:", email);
+          console.log(" Invalid password for:", email);
           return res.status(401).json({
             success: false,
             message: "Invalid credentials",
@@ -242,12 +215,12 @@ async function run() {
 
         await adminCollection.updateOne(
           { _id: admin._id },
-          { $set: { lastLogin: new Date() } }
+          { $set: { lastLogin: new Date() } },
         );
 
         const { password: _, ...adminData } = admin;
 
-        console.log("✅ Admin login successful:", email);
+        console.log(" Admin login successful:", email);
 
         res.json({
           success: true,
@@ -258,7 +231,7 @@ async function run() {
           },
         });
       } catch (error) {
-        console.error("💥 Error in admin login:", error);
+        console.error(" Error in admin login:", error);
         res.status(500).json({
           success: false,
           message: "Internal server error",
@@ -271,7 +244,7 @@ async function run() {
       try {
         const cursor = adminCollection.find(
           {},
-          { projection: { password: 0 } }
+          { projection: { password: 0 } },
         );
         const result = await cursor.toArray();
         res.json({
@@ -359,7 +332,7 @@ async function run() {
 
         const result = await adminCollection.updateOne(
           { _id: new ObjectId(id) },
-          updateDoc
+          updateDoc,
         );
 
         if (result.matchedCount === 0) {
@@ -490,7 +463,7 @@ async function run() {
 
         const result = await registrationCollection.updateOne(
           { _id: new ObjectId(id) },
-          { $set: { ...updateData, updatedAt: new Date() } }
+          { $set: { ...updateData, updatedAt: new Date() } },
         );
 
         res.json({ success: true, message: "User updated successfully" });
@@ -549,15 +522,11 @@ async function run() {
           report.phone = reportData.phone;
           report.address = reportData.address;
           report.userId = reportData.userId || null;
-          report.eligibleForReward = true;
-          report.rewarded = false;
         } else {
           report.name = "Anonymous";
           report.phone = null;
           report.address = null;
           report.userId = null;
-          report.eligibleForReward = false;
-          report.rewarded = false;
         }
         const result = await reportCollection.insertOne(report);
         console.log("Report created:", result.insertedId);
@@ -691,7 +660,7 @@ async function run() {
         }
         const result = await reportCollection.updateOne(
           { _id: new ObjectId(id) },
-          updateDoc
+          updateDoc,
         );
         if (result.matchedCount === 0) {
           return res.status(404).json({
@@ -708,64 +677,6 @@ async function run() {
         res.status(500).json({
           success: false,
           message: "Failed to update report",
-          error: error.message,
-        });
-      }
-    });
-
-    app.patch("/reports/:id/reward", async (req, res) => {
-      try {
-        const { id } = req.params;
-        const { rewardAmount, rewardMessage } = req.body;
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({
-            success: false,
-            message: "Invalid report ID format",
-          });
-        }
-        const report = await reportCollection.findOne({
-          _id: new ObjectId(id),
-        });
-        if (!report) {
-          return res.status(404).json({
-            success: false,
-            message: "Report not found",
-          });
-        }
-        if (report.isAnonymous || !report.eligibleForReward) {
-          return res.status(400).json({
-            success: false,
-            message: "This report is not eligible for rewards",
-          });
-        }
-        if (report.rewarded) {
-          return res.status(400).json({
-            success: false,
-            message: "Reward has already been given for this report",
-          });
-        }
-        const updateDoc = {
-          $set: {
-            rewarded: true,
-            rewardAmount: rewardAmount || null,
-            rewardMessage: rewardMessage || "",
-            rewardedAt: new Date(),
-            updatedAt: new Date(),
-          },
-        };
-        const result = await reportCollection.updateOne(
-          { _id: new ObjectId(id) },
-          updateDoc
-        );
-        res.status(200).json({
-          success: true,
-          message: "Reward processed successfully",
-        });
-      } catch (error) {
-        console.error("Error processing reward:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to process reward",
           error: error.message,
         });
       }
@@ -921,14 +832,26 @@ async function run() {
 
           // Process uploaded files
           const evidenceFiles = req.files
-            ? req.files.map((file) => ({
-                originalName: file.originalname,
-                filename: file.filename,
-                path: file.path,
-                size: file.size,
-                mimetype: file.mimetype,
-                uploadedAt: new Date(),
-              }))
+            ? await Promise.all(
+                req.files.map(async (file) => {
+                  const uploadResult = await uploadBufferToCloudinary(file, {
+                    folder: "acc-evidence",
+                    resource_type: "auto",
+                  });
+
+                  return {
+                    originalName: file.originalname,
+                    size: file.size,
+                    mimetype: file.mimetype,
+                    uploadedAt: new Date(),
+                    publicId: uploadResult.public_id,
+                    url: uploadResult.url,
+                    secureUrl: uploadResult.secure_url,
+                    resourceType: uploadResult.resource_type,
+                    format: uploadResult.format,
+                  };
+                }),
+              )
             : [];
 
           // Create the report document
@@ -998,22 +921,13 @@ async function run() {
         } catch (error) {
           console.error("Error creating ACC form report:", error);
 
-          // Clean up uploaded files if database insertion fails
-          if (req.files) {
-            req.files.forEach((file) => {
-              fs.unlink(file.path, (err) => {
-                if (err) console.error("Error deleting file:", err);
-              });
-            });
-          }
-
           res.status(500).json({
             success: false,
             message: "Failed to submit ACC form report",
             error: error.message,
           });
         }
-      }
+      },
     );
 
     // GET all ACC form reports (for admin)
@@ -1103,7 +1017,7 @@ async function run() {
             error: error.message,
           });
         }
-      }
+      },
     );
 
     // UPDATE ACC form report status
@@ -1132,7 +1046,7 @@ async function run() {
           return res.status(400).json({
             success: false,
             message: `Invalid status. Must be one of: ${validStatuses.join(
-              ", "
+              ", ",
             )}`,
           });
         }
@@ -1154,7 +1068,7 @@ async function run() {
 
         const result = await accFormCollection.updateOne(
           { _id: new ObjectId(id) },
-          updateDoc
+          updateDoc,
         );
 
         if (result.matchedCount === 0) {
@@ -1304,17 +1218,17 @@ async function run() {
 
         const divisionStats = divisions.map((division) => {
           const divisionReports = allReports.filter(
-            (report) => report.incident.division === division
+            (report) => report.incident.division === division,
           );
 
           const reportedCases = divisionReports.length;
           const solvedCases = divisionReports.filter((report) =>
-            ["convicted", "dismissed"].includes(report.status)
+            ["convicted", "dismissed"].includes(report.status),
           ).length;
           const activeCases = divisionReports.filter((report) =>
             ["pending", "investigation", "ongoing", "appealed"].includes(
-              report.status
-            )
+              report.status,
+            ),
           ).length;
 
           return {
@@ -1328,12 +1242,12 @@ async function run() {
         // Calculate overall statistics
         const totalReported = allReports.length;
         const totalSolved = allReports.filter((report) =>
-          ["convicted", "dismissed"].includes(report.status)
+          ["convicted", "dismissed"].includes(report.status),
         ).length;
         const totalActive = allReports.filter((report) =>
           ["pending", "investigation", "ongoing", "appealed"].includes(
-            report.status
-          )
+            report.status,
+          ),
         ).length;
 
         // Find divisions with highest counts
@@ -1342,7 +1256,7 @@ async function run() {
             item.reportedCases > max.count
               ? { division: item.division, count: item.reportedCases }
               : max,
-          { division: "", count: 0 }
+          { division: "", count: 0 },
         );
 
         const highestSolved = divisionStats.reduce(
@@ -1350,7 +1264,7 @@ async function run() {
             item.solvedCases > max.count
               ? { division: item.division, count: item.solvedCases }
               : max,
-          { division: "", count: 0 }
+          { division: "", count: 0 },
         );
 
         res.status(200).json({
@@ -1517,566 +1431,6 @@ async function run() {
         res.status(500).json({
           success: false,
           message: "Failed to fetch dashboard statistics",
-          error: error.message,
-        });
-      }
-    });
-
-    // ==================== TRAINERS ENDPOINTS ====================
-
-    // GET all trainers
-    app.get("/trainers", async (req, res) => {
-      try {
-        const cursor = trainersCollection.find().sort({ uploadDate: -1 });
-        const result = await cursor.toArray();
-        res.status(200).json({
-          success: true,
-          count: result.length,
-          data: result,
-        });
-      } catch (error) {
-        console.error("Error fetching trainers:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to fetch trainers",
-          error: error.message,
-        });
-      }
-    });
-
-    // POST - Create new trainer
-    app.post("/trainers", async (req, res) => {
-      try {
-        const trainerData = {
-          ...req.body,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-
-        const result = await trainersCollection.insertOne(trainerData);
-
-        res.status(201).json({
-          success: true,
-          message: "Trainer added successfully",
-          data: { _id: result.insertedId, ...trainerData },
-        });
-      } catch (error) {
-        console.error("Error creating trainer:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to create trainer",
-          error: error.message,
-        });
-      }
-    });
-
-    // POST - Upload trainer photo
-    app.post(
-      "/upload/trainer-photo",
-      uploadTrainerPhoto.single("photo"),
-      (req, res) => {
-        try {
-          if (!req.file) {
-            return res.status(400).json({
-              success: false,
-              message: "No file uploaded",
-            });
-          }
-
-          const photoPath = req.file.path.replace(/\\/g, "/");
-
-          res.status(200).json({
-            success: true,
-            message: "Photo uploaded successfully",
-            data: {
-              filename: req.file.filename,
-              path: photoPath,
-              url: `${req.protocol}://${req.get("host")}/${photoPath}`,
-            },
-          });
-        } catch (error) {
-          console.error("Error uploading trainer photo:", error);
-          res.status(500).json({
-            success: false,
-            message: "Failed to upload photo",
-            error: error.message,
-          });
-        }
-      }
-    );
-
-    // DELETE - Remove trainer photo
-    app.delete("/upload/trainer-photo/:filename", (req, res) => {
-      try {
-        const { filename } = req.params;
-        const filePath = path.join("uploads", "trainers", filename);
-
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-          res.status(200).json({
-            success: true,
-            message: "Photo deleted successfully",
-          });
-        } else {
-          res.status(404).json({
-            success: false,
-            message: "Photo not found",
-          });
-        }
-      } catch (error) {
-        console.error("Error deleting trainer photo:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to delete photo",
-          error: error.message,
-        });
-      }
-    });
-
-    // PUT - Update trainer
-    app.put("/trainers/:id", async (req, res) => {
-      try {
-        const { id } = req.params;
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({
-            success: false,
-            message: "Invalid trainer ID format",
-          });
-        }
-
-        const updateData = {
-          ...req.body,
-          updatedAt: new Date(),
-        };
-
-        delete updateData._id;
-
-        const result = await trainersCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: updateData }
-        );
-
-        if (result.matchedCount === 0) {
-          return res.status(404).json({
-            success: false,
-            message: "Trainer not found",
-          });
-        }
-
-        res.status(200).json({
-          success: true,
-          message: "Trainer updated successfully",
-        });
-      } catch (error) {
-        console.error("Error updating trainer:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to update trainer",
-          error: error.message,
-        });
-      }
-    });
-
-    // DELETE trainer
-    app.delete("/trainers/:id", async (req, res) => {
-      try {
-        const { id } = req.params;
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({
-            success: false,
-            message: "Invalid trainer ID format",
-          });
-        }
-
-        const result = await trainersCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-
-        if (result.deletedCount === 0) {
-          return res.status(404).json({
-            success: false,
-            message: "Trainer not found",
-          });
-        }
-
-        res.status(200).json({
-          success: true,
-          message: "Trainer deleted successfully",
-        });
-      } catch (error) {
-        console.error("Error deleting trainer:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to delete trainer",
-          error: error.message,
-        });
-      }
-    });
-
-    // ==================== EVENTS ENDPOINTS ====================
-
-    // GET all events
-    app.get("/education-events", async (req, res) => {
-      try {
-        const cursor = eventsCollection.find().sort({ date: -1 });
-        const result = await cursor.toArray();
-        res.status(200).json({
-          success: true,
-          count: result.length,
-          data: result,
-        });
-      } catch (error) {
-        console.error("Error fetching events:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to fetch events",
-          error: error.message,
-        });
-      }
-    });
-
-    // POST - Create new event
-    app.post("/education-events", async (req, res) => {
-      try {
-        const eventData = {
-          ...req.body,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-
-        const result = await eventsCollection.insertOne(eventData);
-
-        res.status(201).json({
-          success: true,
-          message: "Event added successfully",
-          data: { _id: result.insertedId, ...eventData },
-        });
-      } catch (error) {
-        console.error("Error creating event:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to create event",
-          error: error.message,
-        });
-      }
-    });
-
-    // PUT - Update event
-    app.put("/education-events/:id", async (req, res) => {
-      try {
-        const { id } = req.params;
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({
-            success: false,
-            message: "Invalid event ID format",
-          });
-        }
-
-        const updateData = {
-          ...req.body,
-          updatedAt: new Date(),
-        };
-
-        delete updateData._id;
-
-        const result = await eventsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: updateData }
-        );
-
-        if (result.matchedCount === 0) {
-          return res.status(404).json({
-            success: false,
-            message: "Event not found",
-          });
-        }
-
-        res.status(200).json({
-          success: true,
-          message: "Event updated successfully",
-        });
-      } catch (error) {
-        console.error("Error updating event:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to update event",
-          error: error.message,
-        });
-      }
-    });
-
-    // DELETE event
-    app.delete("/education-events/:id", async (req, res) => {
-      try {
-        const { id } = req.params;
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({
-            success: false,
-            message: "Invalid event ID format",
-          });
-        }
-
-        const result = await eventsCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-
-        if (result.deletedCount === 0) {
-          return res.status(404).json({
-            success: false,
-            message: "Event not found",
-          });
-        }
-
-        res.status(200).json({
-          success: true,
-          message: "Event deleted successfully",
-        });
-      } catch (error) {
-        console.error("Error deleting event:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to delete event",
-          error: error.message,
-        });
-      }
-    });
-
-    // ========== GOVERNMENT SPENDING ENDPOINTS ==========
-
-    // GET all government spending items
-    app.get("/api/govt-spending", async (req, res) => {
-      try {
-        const cursor = govtSpendingCollection.find().sort({ createdAt: -1 });
-        const result = await cursor.toArray();
-        res.status(200).json({
-          success: true,
-          count: result.length,
-          data: result,
-        });
-      } catch (error) {
-        console.error("Error fetching govt spending:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to fetch government spending items",
-          error: error.message,
-        });
-      }
-    });
-
-    // POST - Create new government spending item (updated)
-    app.post("/api/govt-spending", async (req, res) => {
-      try {
-        const { name, budget, actual, color, year } = req.body;
-
-        if (!name || budget === undefined || actual === undefined || !color) {
-          return res.status(400).json({
-            success: false,
-            message: "All fields (name, budget, actual, color) are required",
-          });
-        }
-
-        const spendingItem = {
-          name: String(name).trim(),
-          budget: Number(budget),
-          actual: Number(actual),
-          color: String(color),
-          year: year || new Date().getFullYear().toString(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-
-        const result = await govtSpendingCollection.insertOne(spendingItem);
-
-        res.status(201).json({
-          success: true,
-          message: "Government spending item added successfully",
-          data: { _id: result.insertedId, ...spendingItem },
-        });
-      } catch (error) {
-        console.error("Error creating govt spending item:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to create government spending item",
-          error: error.message,
-        });
-      }
-    });
-
-    // PUT - Update government spending item (updated)
-    app.put("/api/govt-spending/:id", async (req, res) => {
-      try {
-        const { id } = req.params;
-        const { name, budget, actual, color, year } = req.body;
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({
-            success: false,
-            message: "Invalid spending item ID format",
-          });
-        }
-
-        if (!name || budget === undefined || actual === undefined || !color) {
-          return res.status(400).json({
-            success: false,
-            message: "All fields (name, budget, actual, color) are required",
-          });
-        }
-
-        const updateDoc = {
-          $set: {
-            name: String(name).trim(),
-            budget: Number(budget),
-            actual: Number(actual),
-            color: String(color),
-            year: year || new Date().getFullYear().toString(),
-            updatedAt: new Date(),
-          },
-        };
-
-        const result = await govtSpendingCollection.updateOne(
-          { _id: new ObjectId(id) },
-          updateDoc
-        );
-
-        if (result.matchedCount === 0) {
-          return res.status(404).json({
-            success: false,
-            message: "Government spending item not found",
-          });
-        }
-
-        res.status(200).json({
-          success: true,
-          message: "Government spending item updated successfully",
-        });
-      } catch (error) {
-        console.error("Error updating govt spending item:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to update government spending item",
-          error: error.message,
-        });
-      }
-    });
-
-    // DELETE government spending item
-    app.delete("/api/govt-spending/:id", async (req, res) => {
-      try {
-        const { id } = req.params;
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).json({
-            success: false,
-            message: "Invalid spending item ID format",
-          });
-        }
-
-        const result = await govtSpendingCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-
-        if (result.deletedCount === 0) {
-          return res.status(404).json({
-            success: false,
-            message: "Government spending item not found",
-          });
-        }
-
-        res.status(200).json({
-          success: true,
-          message: "Government spending item deleted successfully",
-        });
-      } catch (error) {
-        console.error("Error deleting govt spending item:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to delete government spending item",
-          error: error.message,
-        });
-      }
-    });
-
-    // GET yearly spending data
-    app.get("/api/govt-spending/yearly", async (req, res) => {
-      try {
-        const pipeline = [
-          {
-            $group: {
-              _id: "$year",
-              budget: { $sum: "$budget" },
-              actual: { $sum: "$actual" },
-            },
-          },
-          {
-            $project: {
-              _id: 0,
-              year: "$_id",
-              budget: 1,
-              actual: 1,
-            },
-          },
-          {
-            $sort: { year: 1 },
-          },
-        ];
-
-        const yearlyData = await govtSpendingCollection
-          .aggregate(pipeline)
-          .toArray();
-
-        res.status(200).json({
-          success: true,
-          data: yearlyData,
-        });
-      } catch (error) {
-        console.error("Error fetching yearly spending data:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to fetch yearly spending data",
-          error: error.message,
-        });
-      }
-    });
-
-    // GET government spending statistics
-    app.get("/api/govt-spending/stats/overview", async (req, res) => {
-      try {
-        const allItems = await govtSpendingCollection.find().toArray();
-
-        const totalBudget = allItems.reduce(
-          (sum, item) => sum + Number(item.budget),
-          0
-        );
-        const totalActual = allItems.reduce(
-          (sum, item) => sum + Number(item.actual),
-          0
-        );
-        const totalVariance = totalActual - totalBudget;
-        const variancePercent =
-          totalBudget > 0
-            ? ((totalVariance / totalBudget) * 100).toFixed(2)
-            : 0;
-
-        res.status(200).json({
-          success: true,
-          data: {
-            totalItems: allItems.length,
-            totalBudget,
-            totalActual,
-            totalVariance,
-            variancePercent: parseFloat(variancePercent),
-            items: allItems,
-          },
-        });
-      } catch (error) {
-        console.error("Error fetching govt spending stats:", error);
-        res.status(500).json({
-          success: false,
-          message: "Failed to fetch government spending statistics",
           error: error.message,
         });
       }
